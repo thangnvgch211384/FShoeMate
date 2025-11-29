@@ -9,8 +9,19 @@ const {
 
 async function handleList(_req, res, next) {
   try {
-    const categories = await listCategories();
-    res.json({ success: true, categories });
+    const result = await listCategories();
+    // If result is an object with parents/children, return grouped structure
+    // Otherwise return as array for backward compatibility
+    if (result.parents && result.children) {
+      res.json({ 
+        success: true, 
+        categories: result.all, // All categories for backward compatibility
+        grouped: result.children, // Grouped child categories
+        parents: result.parents // Parent categories
+      });
+    } else {
+      res.json({ success: true, categories: result });
+    }
   } catch (error) {
     next(error);
   }

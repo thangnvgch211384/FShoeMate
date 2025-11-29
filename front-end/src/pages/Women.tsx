@@ -5,6 +5,13 @@ import { Container } from "@/components/layout/Container"
 import { ProductCard } from "@/components/product/ProductCard"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Filter, SlidersHorizontal, Grid3X3, List, Heart, X, Check } from "lucide-react"
 import { fetchProducts, fetchCategories } from "@/lib/api"
 import { useNavigate } from "react-router-dom"
@@ -35,10 +42,11 @@ interface Product {
 }
 
 interface Category {
-  _id: string
-  id: string
+  _id?: string
+  id?: string
   name: string
   description?: string
+  parentId?: string | null
   count?: number
 }
 
@@ -86,8 +94,58 @@ export default function Women() {
         // Load categories
         try {
           const categoriesRes = await fetchCategories()
-          const cats = categoriesRes.categories || []
-          setCategories(cats)
+          
+          // Priority: Use grouped categories from backend if available
+          if (categoriesRes.children && Array.isArray(categoriesRes.children) && categoriesRes.children.length > 0) {
+            const sortedCategories = categoriesRes.children.sort((a: any, b: any) => {
+              const order = ["lifestyle", "running", "football", "skateboarding", "training-gym"]
+              const aIndex = order.indexOf(a.name?.toLowerCase() || "")
+              const bIndex = order.indexOf(b.name?.toLowerCase() || "")
+              if (aIndex === -1 && bIndex === -1) return 0
+              if (aIndex === -1) return 1
+              if (bIndex === -1) return -1
+              return aIndex - bIndex
+            })
+            setCategories(sortedCategories)
+          } else {
+            // Fallback: Group categories manually
+            const allCategories = categoriesRes.all || categoriesRes.categories || []
+            const childCategories = allCategories.filter(
+              (cat: any) => 
+                cat.parentId !== null && 
+                cat.parentId !== undefined &&
+                cat.name?.toLowerCase() !== "men" && 
+                cat.name?.toLowerCase() !== "women" &&
+                cat.name?.toLowerCase() !== "kids"
+            )
+            
+            // Group by name
+            const groupedCategories = new Map<string, { name: string; count: number; id: string }>()
+            childCategories.forEach((cat: any) => {
+              const cleanName = (cat.name || "").replace(/^(Men|Women|Kids)\s+/i, "").trim() || cat.name
+              const existing = groupedCategories.get(cleanName)
+              if (existing) {
+                existing.count += cat.count || 0
+              } else {
+                groupedCategories.set(cleanName, {
+                  name: cleanName,
+                  count: cat.count || 0,
+                  id: cat.id || ""
+                })
+              }
+            })
+            
+            const sortedCategories = Array.from(groupedCategories.values()).sort((a, b) => {
+              const order = ["lifestyle", "running", "football", "skateboarding", "training-gym"]
+              const aIndex = order.indexOf(a.name?.toLowerCase() || "")
+              const bIndex = order.indexOf(b.name?.toLowerCase() || "")
+              if (aIndex === -1 && bIndex === -1) return 0
+              if (aIndex === -1) return 1
+              if (bIndex === -1) return -1
+              return aIndex - bIndex
+            })
+            setCategories(sortedCategories)
+          }
         } catch (catErr) {
           console.error("Failed to load categories", catErr)
         }
@@ -146,10 +204,14 @@ export default function Women() {
     // Exclude featured products from Men/Women/Kids pages (only show in Home and All Shoes)
     if (product.isFeatured) return false
     
-    // Filter by categories
+    // Filter by categories (match by normalized category name)
     if (selectedCategories.length > 0) {
-      const productCategoryId = product.categoryId || product.category?.id || ""
-      if (!selectedCategories.includes(productCategoryId)) return false
+      let productCategoryName = product.categoryName || product.category?.name || ""
+      // Remove prefix like "Men ", "Women ", "Kids " from category name
+      if (productCategoryName) {
+        productCategoryName = productCategoryName.replace(/^(Men|Women|Kids)\s+/i, "").trim() || productCategoryName
+      }
+      if (!selectedCategories.includes(productCategoryName)) return false
     }
     return true
   })
@@ -187,32 +249,31 @@ export default function Women() {
   const currentBrands = products.length > 0 ? [...new Set(products.map(p => p.brand).filter(Boolean))] : []
   const availableBrands = [...new Set([...currentBrands, ...selectedBrands, ...allBrands])].sort()
   
-  // Calculate category counts based on all products (all female products)
+  // Calculate category counts by category name (normalized) for Women's page
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = {}
-    // Count all products for each category (excluding featured products)
+    // Count products by normalized category name (excluding featured products)
     allProducts.forEach((product) => {
       // Exclude featured products from count (same as filtering logic)
       if (product.isFeatured) return
-      const productCategoryId = product.categoryId || product.category?.id || ""
-      if (productCategoryId) {
-        counts[productCategoryId] = (counts[productCategoryId] || 0) + 1
+      let productCategoryName = product.categoryName || product.category?.name || ""
+      // Remove prefix like "Men ", "Women ", "Kids " from category name
+      if (productCategoryName) {
+        productCategoryName = productCategoryName.replace(/^(Men|Women|Kids)\s+/i, "").trim() || productCategoryName
+        counts[productCategoryName] = (counts[productCategoryName] || 0) + 1
       }
     })
     return counts
   }, [allProducts])
 
-  // Scroll to top when filters change
-  useEffect(() => {
-    window.scrollTo({ top: 0, behavior: 'smooth' })
-  }, [selectedSize, selectedColors, selectedCategories, selectedBrands, priceRange])
 
-  const handleCategoryClick = (categoryId: string) => {
+
+  const handleCategoryClick = (categoryName: string) => {
     setSelectedCategories(prev => {
-      if (prev.includes(categoryId)) {
-        return prev.filter(c => c !== categoryId)
+      if (prev.includes(categoryName)) {
+        return prev.filter(c => c !== categoryName)
       } else {
-        return [...prev, categoryId]
+        return [...prev, categoryName]
       }
     })
   }
@@ -309,26 +370,53 @@ export default function Women() {
                 {availableColors.length > 0 && (
                   <div className="mb-6">
                     <h4 className="font-medium mb-3">Color</h4>
-                    <div className="grid grid-cols-2 gap-2">
-
-                      {availableColors.map((color) => {
-                        const isSelected = selectedColors.includes(color)
-                        return (
-                          <Button
+                    <Select
+                      value={selectedColors.length > 0 ? selectedColors[0] : "all"}
+                      onValueChange={(value) => {
+                        if (value === "all") {
+                          setSelectedColors([])
+                        } else {
+                          setSelectedColors([value])
+                        }
+                      }}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select color">
+                          {selectedColors.length > 0 
+                            ? selectedColors.length === 1 
+                              ? selectedColors[0]
+                              : `${selectedColors.length} colors selected`
+                            : "All colors"}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All colors</SelectItem>
+                        {availableColors.map((color) => (
+                          <SelectItem key={color} value={color}>
+                            {color}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {selectedColors.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {selectedColors.map((color) => (
+                          <Badge
                             key={color}
-                            variant={isSelected ? "default" : "ghost"}
-                            size="sm"
-                            onClick={() => handleColorClick(color)}
-                            className="text-xs flex items-center"
+                            variant="secondary"
+                            className="text-xs px-2 py-1"
                           >
                             {color}
-                            {isSelected && (
-                              <Check className="ml-auto h-3 w-3" />
-                            )}
-                          </Button>
-                        )
-                      })}
-                    </div>
+                            <button
+                              onClick={() => handleColorClick(color)}
+                              className="ml-1 hover:text-destructive"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -336,133 +424,180 @@ export default function Women() {
                 {availableSizes.length > 0 && (
                   <div className="mb-6">
                     <h4 className="font-medium mb-3">Size</h4>
-                    <div className="grid grid-cols-3 gap-2">
-                      <Button
-                        variant={selectedSize === null ? "default" : "ghost"}
-                        size="sm"
-                        onClick={() => setSelectedSize(null)}
-                        className="text-xs"
-                      >
-                        All
-                      </Button>
-                      {availableSizes.map((size) => (
-                        <Button
-                          key={size}
-                          variant={selectedSize === size ? "default" : "ghost"}
-                          size="sm"
-                          onClick={() => setSelectedSize(size)}
-                          className="text-xs"
-                        >
-                          {size}
-                        </Button>
-                      ))}
-                    </div>
+                    <Select
+                      value={selectedSize || "all"}
+                      onValueChange={(value) => {
+                        setSelectedSize(value === "all" ? null : value)
+                      }}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select size">
+                          {selectedSize || "All sizes"}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All sizes</SelectItem>
+                        {availableSizes.map((size) => (
+                          <SelectItem key={size} value={size}>
+                            {size}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                 )}
 
                 {/* Price Range */}
-                <div>
+                <div className="mb-6">
                   <h4 className="font-medium mb-3">Price range</h4>
-                  <div className="space-y-3">
-                    <div className="flex justify-between text-sm text-muted-foreground">
-                      <span>{priceRange[0].toLocaleString('vi-VN')}₫</span>
-                      <span>{priceRange[1].toLocaleString('vi-VN')}₫</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0"
-                      max="5000000"
-                      step="100000"
-                      value={priceRange[1]}
-                      onChange={(e) => setPriceRange([priceRange[0], parseInt(e.target.value)])}
-                      className="w-full accent-primary"
-                    />
-                  </div>
+                  <Select
+                    value={priceRange[1].toString()}
+                    onValueChange={(value) => {
+                      const maxPrice = parseInt(value)
+                      setPriceRange([0, maxPrice])
+                    }}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Select price range">
+                        {priceRange[1] === 5000000 
+                          ? "All prices" 
+                          : `Up to ${priceRange[1].toLocaleString('vi-VN')}₫`}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="5000000">All prices</SelectItem>
+                      <SelectItem value="1000000">Up to 1.000.000₫</SelectItem>
+                      <SelectItem value="2000000">Up to 2.000.000₫</SelectItem>
+                      <SelectItem value="3000000">Up to 3.000.000₫</SelectItem>
+                      <SelectItem value="4000000">Up to 4.000.000₫</SelectItem>
+                      <SelectItem value="5000000">Up to 5.000.000₫</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
 
                 {/* Categories */}
                 {categories.length > 0 && (
-                  <div className="mt-6">
+                  <div className="mb-6">
                     <h4 className="font-medium mb-3">Categories</h4>
-                    <div className="space-y-2">
-                      {selectedCategories.length > 0 && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setSelectedCategories([])}
-                          className="w-full justify-start text-sm text-muted-foreground"
-                        >
-                          Clear Categories
-                        </Button>
-                      )}
-                      {categories.map((category) => {
-                        const categoryId = category.id || ""
-                        const isSelected = selectedCategories.includes(categoryId)
-                        const count = categoryCounts[categoryId] ?? 0
-                        const isDisabled = count === 0 && !isSelected
-                        
-                        return (
-                          <Button
-                            key={category._id || categoryId}
-                            variant={isSelected ? "default" : "ghost"}
-                            size="sm"
-                            onClick={() => handleCategoryClick(categoryId)}
-                            disabled={isDisabled}
-                            className={cn(
-                              "w-full justify-start text-sm flex items-center",
-                              isDisabled && "opacity-50 cursor-not-allowed"
-                            )}
-                            title={isDisabled ? "No products in this category" : ""}
-                          >
-                            {category.name}
-                            {isSelected && (
-                              <Check className="ml-auto h-4 w-4" />
-                            )}
-                            {!isDisabled && !isSelected && count > 0 && (
-                              <span className="ml-auto text-xs text-muted-foreground">
-                                ({count})
-                              </span>
-                            )}
-                          </Button>
-                        )
-                      })}
-                    </div>
+                    <Select
+                      value={selectedCategories.length > 0 ? selectedCategories[0] : "all"}
+                      onValueChange={(value) => {
+                        if (value === "all") {
+                          setSelectedCategories([])
+                        } else {
+                          handleCategoryClick(value)
+                        }
+                      }}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select category">
+                          {selectedCategories.length > 0 
+                            ? categories.find(c => (c.name || "") === selectedCategories[0])?.name || selectedCategories[0]
+                            : "All categories"}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All categories</SelectItem>
+                        {categories.map((category) => {
+                          const categoryName = category.name || ""
+                          const count = categoryCounts[categoryName] ?? category.count ?? 0
+                          const isDisabled = count === 0 && !selectedCategories.includes(categoryName)
+                          return (
+                            <SelectItem 
+                              key={categoryName || category.id} 
+                              value={categoryName}
+                              disabled={isDisabled}
+                            >
+                              {categoryName} {!isDisabled && count > 0 && `(${count})`}
+                            </SelectItem>
+                          )
+                        })}
+                      </SelectContent>
+                    </Select>
+                    {selectedCategories.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {selectedCategories.map((categoryName) => {
+                          const category = categories.find(c => (c.name || "") === categoryName)
+                          return (
+                            <Badge
+                              key={categoryName}
+                              variant="secondary"
+                              className="text-xs px-2 py-1"
+                            >
+                              {category?.name || categoryName}
+                              <button
+                                onClick={() => handleCategoryClick(categoryName)}
+                                className="ml-1 hover:text-destructive"
+                              >
+                                <X className="h-3 w-3" />
+                              </button>
+                            </Badge>
+                          )
+                        })}
+                      </div>
+                    )}
                   </div>
                 )}
 
                 {/* Brands */}
                 {availableBrands.length > 0 && (
-                  <div className="mt-6">
+                  <div className="mb-6">
                     <h4 className="font-medium mb-3">Brands</h4>
-                    <div className="space-y-2">
-
-                      {availableBrands.map((brand) => {
-                        const isInCurrentProducts = currentBrands.includes(brand)
-                        const isSelected = selectedBrands.includes(brand)
-                        return (
-                          <Button
+                    <Select
+                      value={selectedBrands.length > 0 ? selectedBrands[0] : "all"}
+                      onValueChange={(value) => {
+                        if (value === "all") {
+                          setSelectedBrands([])
+                        } else {
+                          handleBrandClick(value)
+                        }
+                      }}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select brand">
+                          {selectedBrands.length > 0
+                            ? selectedBrands.length === 1
+                              ? selectedBrands[0]
+                              : `${selectedBrands.length} brands selected`
+                            : "All brands"}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All brands</SelectItem>
+                        {availableBrands.map((brand) => {
+                          const isInCurrentProducts = currentBrands.includes(brand)
+                          const isSelected = selectedBrands.includes(brand)
+                          return (
+                            <SelectItem 
+                              key={brand} 
+                              value={brand}
+                              disabled={!isInCurrentProducts && !isSelected}
+                            >
+                              {brand} {!isInCurrentProducts && isSelected && "(0)"}
+                            </SelectItem>
+                          )
+                        })}
+                      </SelectContent>
+                    </Select>
+                    {selectedBrands.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {selectedBrands.map((brand) => (
+                          <Badge
                             key={brand}
-                            variant={isSelected ? "default" : "ghost"}
-                            size="sm"
-                            onClick={() => handleBrandClick(brand)}
-                            disabled={!isInCurrentProducts && !isSelected}
-                            className={cn(
-                              "w-full justify-start text-sm",
-                              !isInCurrentProducts && !isSelected && "opacity-50 cursor-not-allowed"
-                            )}
-                            title={!isInCurrentProducts && !isSelected ? "No products in this category" : ""}
+                            variant="secondary"
+                            className="text-xs px-2 py-1"
                           >
                             {brand}
-                            {isSelected && (
-                              <span className="ml-auto text-xs">✓</span>
-                            )}
-                            {!isInCurrentProducts && isSelected && (
-                              <span className="ml-auto text-xs text-muted-foreground">(0)</span>
-                            )}
-                          </Button>
-                        )
-                      })}
-                    </div>
+                            <button
+                              onClick={() => handleBrandClick(brand)}
+                              className="ml-1 hover:text-destructive"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

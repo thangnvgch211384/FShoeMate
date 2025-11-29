@@ -39,13 +39,17 @@ interface AddToCartInput {
   quantity?: number
 }
 
+interface AddToCartOptions {
+  silent?: boolean
+}
+
 type CartAction = { type: "SET_ITEMS"; payload: CartItem[] }
 
 const CartContext = createContext<{
   state: CartState
   mode: CartMode
   loading: boolean
-  addToCart: (item: AddToCartInput) => Promise<void> | void
+  addToCart: (item: AddToCartInput, options?: AddToCartOptions) => Promise<void> | void
   removeFromCart: (lineId: string) => Promise<void> | void
   updateQuantity: (lineId: string, quantity: number) => Promise<void> | void
   clearCart: () => Promise<void> | void
@@ -202,7 +206,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  const addToCart = async (item: AddToCartInput) => {
+  const addToCart = async (item: AddToCartInput, options?: AddToCartOptions) => {
     const quantity = item.quantity ?? 1
     const token = getAuthToken()
 
@@ -216,18 +220,22 @@ export function CartProvider({ children }: { children: ReactNode }) {
         if (data?.cart) {
           dispatch({ type: "SET_ITEMS", payload: mapServerCartItems(data.cart) })
           setMode("server")
-          toast({
-            title: "Added to cart",
-            description: `${item.name} has been added to your cart`
-          })
+          if (!options?.silent) {
+            toast({
+              title: "Added to cart",
+              description: `${item.name} has been added to your cart`
+            })
+          }
           return
         }
       } catch (error) {
         console.error("Server cart add failed", error)
-        toast({
-          title: "Cannot sync with server",
-          description: "Cart will be saved locally temporarily.",
-        })
+        if (!options?.silent) {
+          toast({
+            title: "Cannot sync with server",
+            description: "Cart will be saved locally temporarily.",
+          })
+        }
         setMode("local")
       } finally {
         setLoading(false)
@@ -262,39 +270,41 @@ export function CartProvider({ children }: { children: ReactNode }) {
       ]
     }
     dispatch({ type: "SET_ITEMS", payload: newItems })
-    toast({
-      title: "Added to cart",
-      description: `${item.name} has been added to your cart.`,
-    })
+    if (!options?.silent) {
+      toast({
+        title: "Added to cart",
+        description: `${item.name} has been added to your cart.`,
+      })
+    }
   }
 
   const updateQuantity = async (lineId: string, quantity: number) => {
     if (quantity < 0) return
     const token = getAuthToken()
 
+    // Optimistic update - update UI immediately
+    const newItems = state.items
+      .map((item) => item.lineId === lineId ? { ...item, quantity } : item)
+      .filter((item) => item.quantity > 0)
+    dispatch({ type: "SET_ITEMS", payload: newItems })
+
+    // Then sync with server if authenticated
     if (mode === "server" && token) {
       try {
-        setLoading(true)
         const data = await apiRequest(`/cart/items/${lineId}`, {
           method: "PUT",
           body: JSON.stringify({ quantity })
         })
         if (data?.cart) {
+          // Update with server response to ensure consistency
           dispatch({ type: "SET_ITEMS", payload: mapServerCartItems(data.cart) })
-          return
         }
       } catch (error) {
         console.error("Server cart update failed", error)
+        // Revert to local mode on error, but keep the optimistic update
         setMode("local")
-      } finally {
-        setLoading(false)
       }
     }
-
-    const newItems = state.items
-      .map((item) => item.lineId === lineId ? { ...item, quantity } : item)
-      .filter((item) => item.quantity > 0)
-    dispatch({ type: "SET_ITEMS", payload: newItems })
   }
 
   const removeFromCart = async (lineId: string) => {

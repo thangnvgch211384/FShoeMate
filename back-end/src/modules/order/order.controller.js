@@ -125,6 +125,7 @@ async function handleUpdatePaymentStatus(req, res, next) {
 }
 
 async function handleCancelOrder(req, res, next) {
+  
   try {
     const userId = req.user?.id || null; // Support guest orders (userId can be null)
     const orderId = req.params.id;

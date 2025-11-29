@@ -34,7 +34,8 @@ export default function ProductForm() {
 
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [categories, setCategories] = useState<{ id: string; name: string }[]>([])
+  const [categories, setCategories] = useState<{ id: string; name: string; parentId?: string | null; displayName?: string }[]>([])
+  const [parentCategories, setParentCategories] = useState<{ id: string; name: string }[]>([])
 
   const [formData, setFormData] = useState({
     name: "",
@@ -64,7 +65,41 @@ export default function ProductForm() {
   const loadCategories = async () => {
     try {
       const res = await fetchCategories()
-      setCategories(res.categories || [])
+      
+      // Get all categories (including parent and child)
+      const allCategories = res.all || res.categories || []
+      
+      // Separate parent and child categories
+      const parents = allCategories.filter((cat: any) => !cat.parentId)
+      const children = allCategories.filter((cat: any) => cat.parentId)
+      
+      // Create a map of parent categories for lookup
+      const parentMap = new Map<string, string>(parents.map((p: any) => [p.id, p.name || ""]))
+      
+      // Format child categories with parent name prefix (e.g., "Men > Running")
+      const formattedCategories = children.map((cat: any) => {
+        const parentName = parentMap.get(cat.parentId) || ""
+        const displayName = parentName ? `${parentName} > ${cat.name}` : cat.name
+        return {
+          id: cat.id,
+          name: cat.name,
+          parentId: cat.parentId,
+          displayName
+        }
+      })
+      
+      // Sort by parent name, then by child name
+      formattedCategories.sort((a, b) => {
+        const aParent: string = parentMap.get(a.parentId || "") || ""
+        const bParent: string = parentMap.get(b.parentId || "") || ""
+        if (aParent !== bParent) {
+          return aParent.localeCompare(bParent)
+        }
+        return (a.name || "").localeCompare(b.name || "")
+      })
+      
+      setParentCategories(parents)
+      setCategories(formattedCategories)
     } catch (error) {
       console.error("Failed to load categories:", error)
     }
@@ -485,7 +520,30 @@ export default function ProductForm() {
                       <Label htmlFor="categoryId">Category *</Label>
                       <Select
                         value={formData.categoryId}
-                        onValueChange={(value) => setFormData(prev => ({ ...prev, categoryId: value }))}
+                        onValueChange={(value) => {
+                          // Find the selected category to get parent info
+                          const selectedCat = categories.find(cat => cat.id === value)
+                          const parentName = selectedCat?.parentId 
+                            ? parentCategories.find(p => p.id === selectedCat.parentId)?.name?.toLowerCase()
+                            : null
+                          
+                          // Auto-set targetAudience based on category parent
+                          let autoAudience: string[] = []
+                          if (parentName === "men") {
+                            autoAudience = ["male"]
+                          } else if (parentName === "women") {
+                            autoAudience = ["female"]
+                          } else if (parentName === "kids") {
+                            autoAudience = ["kids"]
+                          }
+                          
+                          setFormData(prev => ({
+                            ...prev,
+                            categoryId: value,
+                            // Always auto-set targetAudience from category
+                            targetAudience: autoAudience
+                          }))
+                        }}
                       >
                         <SelectTrigger>
                           <SelectValue placeholder="Select category" />
@@ -493,11 +551,14 @@ export default function ProductForm() {
                         <SelectContent>
                           {categories.map(cat => (
                             <SelectItem key={cat.id} value={cat.id}>
-                              {cat.name}
+                              {cat.displayName || cat.name}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
+                      <p className="text-xs text-muted-foreground">
+                        Target audience will be automatically set based on category
+                      </p>
                     </div>
                   </div>
                 </CardContent>
@@ -800,17 +861,33 @@ export default function ProductForm() {
                 <CardHeader>
                   <CardTitle>Target Audience</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-2">
-                  {TARGET_AUDIENCE_OPTIONS.map(option => (
-                    <div key={option.value} className="flex items-center space-x-2">
-                      <Checkbox
-                        id={option.value}
-                        checked={formData.targetAudience.includes(option.value)}
-                        onCheckedChange={() => handleTargetAudienceToggle(option.value)}
-                      />
-                      <Label htmlFor={option.value}>{option.label}</Label>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <p className="text-sm text-muted-foreground">
+                      Automatically set from category. You can add "Unisex" if the product fits both genders.
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {formData.targetAudience.map(audience => (
+                        <Badge key={audience} variant="secondary">
+                          {audience === "male" ? "Male" : audience === "female" ? "Female" : audience === "kids" ? "Kids" : "Unisex"}
+                        </Badge>
+                      ))}
                     </div>
-                  ))}
+                  </div>
+                  
+                  {/* Option to toggle "Unisex" */}
+                  <div className="flex items-center space-x-2 pt-2 border-t">
+                    <Checkbox
+                      id="unisex"
+                      checked={formData.targetAudience.includes("unisex")}
+                      onCheckedChange={() => handleTargetAudienceToggle("unisex")}
+                    />
+                    <Label htmlFor="unisex">
+                      {formData.targetAudience.includes("unisex") 
+                        ? "Remove Unisex (uncheck to remove)" 
+                        : "Also suitable for Unisex (both genders)"}
+                    </Label>
+                  </div>
                 </CardContent>
               </Card>
 

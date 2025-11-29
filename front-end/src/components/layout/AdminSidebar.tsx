@@ -6,6 +6,7 @@ import {
   Users, 
   Ticket,
   Warehouse,
+  FolderTree,
   Home,
   LogOut,
   User,
@@ -33,6 +34,11 @@ const adminMenuItems = [
     title: "Products",
     href: "/admin/products",
     icon: Package,
+  },
+  {
+    title: "Categories",
+    href: "/admin/categories",
+    icon: FolderTree,
   },
   {
     title: "Orders",

@@ -315,6 +315,33 @@ export async function fetchProducts(params?: Record<string, string | number>) {
     return apiRequest("/categories");
   }
 
+  export async function getCategory(id: string) {
+    return apiRequest(`/categories/${id}`);
+  }
+
+  export async function createCategory(data: { id: string; name: string; description?: string; parentId?: string | null }) {
+    return apiRequest("/categories", {
+      method: "POST",
+      auth: true,
+      body: JSON.stringify(data)
+    });
+  }
+
+  export async function updateCategory(id: string, data: { name?: string; description?: string; parentId?: string | null }) {
+    return apiRequest(`/categories/${id}`, {
+      method: "PUT",
+      auth: true,
+      body: JSON.stringify(data)
+    });
+  }
+
+  export async function deleteCategory(id: string) {
+    return apiRequest(`/categories/${id}`, {
+      method: "DELETE",
+      auth: true
+    });
+  }
+
 export async function createReview(productId: string, payload: { rating: number; comment?: string }) {
   return apiRequest(`/products/${productId}/reviews`, {
     method: "POST",

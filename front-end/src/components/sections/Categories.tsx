@@ -44,16 +44,39 @@ export function Categories() {
           return
         }
         
-        // Sort to show specific categories first
-        const sortedItems = items.sort((a: any, b: any) => {
-          const order = ["lifestyle", "running", "skateboarding", "football", "training-gym"]
-          const aIndex = order.indexOf(a.id?.toLowerCase() || "")
-          const bIndex = order.indexOf(b.id?.toLowerCase() || "")
+        // Filter to only show child categories (have parentId)
+        const childCategories = items.filter((cat: any) => cat.parentId !== null && cat.parentId !== undefined)
+        
+        // Group child categories by name (Running, Football, Lifestyle) and sum counts
+        const groupedCategories = new Map<string, { name: string; count: number; id: string }>()
+        
+        childCategories.forEach((cat: any) => {
+          const name = cat.name || ""
+          const existing = groupedCategories.get(name)
+          if (existing) {
+            existing.count += cat.count || 0
+          } else {
+            // Use the first category's id as the representative id
+            groupedCategories.set(name, {
+              name: name,
+              count: cat.count || 0,
+              id: cat.id || ""
+            })
+          }
+        })
+        
+        // Convert map to array and sort
+        const groupedArray = Array.from(groupedCategories.values())
+        const sortedItems = groupedArray.sort((a: any, b: any) => {
+          const order = ["lifestyle", "running", "football", "skateboarding", "training-gym"]
+          const aIndex = order.indexOf(a.name?.toLowerCase() || "")
+          const bIndex = order.indexOf(b.name?.toLowerCase() || "")
           if (aIndex === -1 && bIndex === -1) return 0
           if (aIndex === -1) return 1
           if (bIndex === -1) return -1
           return aIndex - bIndex
         })
+        
         setCategories(sortedItems)
       } catch (error) {
         console.error("Failed to load categories:", error)
@@ -109,10 +132,11 @@ export function Categories() {
                 console.warn("Category missing id field:", category)
               }
               
+              // Pass category name instead of ID so Products page can filter by all categories with same name
               return (
                 <Link
-                  key={category._id || category.id || index}
-                  to={`/products?category=${categoryId}`}
+                  key={category.id || index}
+                  to={`/products?category=${encodeURIComponent(category.name)}`}
                   className="group relative bg-card rounded-2xl border border-border/50 p-6 hover:shadow-large hover:border-primary/30 transition-all duration-300 hover:-translate-y-2 cursor-pointer overflow-hidden"
                 >
                   {/* Gradient Background */}

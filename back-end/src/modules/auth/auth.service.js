@@ -49,10 +49,6 @@ async function requestPasswordReset(email) {
     await sendPasswordResetEmail(user.email, resetToken);
   } catch (error) {
     console.error("Failed to send reset email:", error.message || error);
-    // Log chi tiết để debug
-    if (error.message && error.message.includes("Email configuration missing")) {
-      console.error("⚠️  Please configure EMAIL_USER and EMAIL_PASSWORD in .env file");
-    }
   }
 
   return {
@@ -62,23 +58,37 @@ async function requestPasswordReset(email) {
 }
 
 async function resetPasswordWithToken(token, newPassword) {
-  const user = await User.findOne({
-    resetPasswordToken: token,
-    resetPasswordExpires: { $gt: Date.now() }
-  });
-
-  if (!user) {
-    const err = new Error("Invalid or expired reset token");
+  if (!token) {
+    const err = new Error("Reset token is required");
     err.status = 400;
     throw err;
   }
 
+  const userWithToken = await User.findOne({
+    resetPasswordToken: token
+  });
+
+  if (!userWithToken) {
+    const err = new Error("Invalid reset token");
+    err.status = 400;
+    throw err;
+  }
+
+  // Check if token has expired
+  const now = new Date();
+  if (!userWithToken.resetPasswordExpires || userWithToken.resetPasswordExpires < now) {
+    const err = new Error("Reset token has expired. Please request a new password reset.");
+    err.status = 400;
+    throw err;
+  }
+
+  // Token is valid, proceed with password reset
   const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-  user.password = hashedPassword;
-  user.resetPasswordToken = undefined;
-  user.resetPasswordExpires = undefined;
-  await user.save();
+  userWithToken.password = hashedPassword;
+  userWithToken.resetPasswordToken = undefined;
+  userWithToken.resetPasswordExpires = undefined;
+  await userWithToken.save();
 
   return { success: true, message: "Password reset successfully" };
 }

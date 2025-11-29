@@ -27,13 +27,13 @@ import Wishlist from "./pages/Wishlist"
 import OrderHistory from "./pages/OrderHistory"
 import OrderDetail from "./pages/OrderDetail"
 import TrackOrder from "./pages/TrackOrder"
-import Search from "./pages/Search"
 import { lazy, Suspense } from "react"
 const AdminOrders = lazy(() => import("@/pages/Admin/Orders"))
 const AdminCustomers = lazy(() => import("@/pages/Admin/Customers"))
 const AdminVouchers = lazy(() => import("@/pages/Admin/Vouchers"))
 const AdminInventory = lazy(() => import("@/pages/Admin/Inventory"))
 const AdminProductVariants = lazy(() => import("@/pages/Admin/ProductVariants"))
+const AdminCategories = lazy(() => import("@/pages/Admin/Categories"))
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -62,7 +62,6 @@ const App = () => (
               <Route path="/orders" element={<OrderHistory />} />
               <Route path="/orders/:id" element={<OrderDetail />} />
               <Route path="/track-order" element={<TrackOrder />} />
-              <Route path="/search" element={<Search />} />
               <Route path="/men" element={<Men />} />
               <Route path="/women" element={<Women />} />
               <Route path="/kids" element={<Kids />} />
@@ -73,6 +72,7 @@ const App = () => (
               <Route path="/admin/products/new" element={<ProductForm />} />
               <Route path="/admin/products/:id/edit" element={<ProductForm />} />
               <Route path="/admin/products/:productId/variants" element={<AdminProductVariants />} />
+              <Route path="/admin/categories" element={<AdminCategories />} />
               <Route path="/admin/orders" element={<AdminOrders />} />
               <Route path="/admin/customers" element={<AdminCustomers />} />
               <Route path="/admin/vouchers" element={<AdminVouchers />} />

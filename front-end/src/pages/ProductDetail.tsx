@@ -269,6 +269,18 @@ export default function ProductDetail() {
     prevSelectedColorRef.current = selectedColor
   }, [allImages.length, selectedImageIndex, selectedColor])
 
+  // Reset to first image (index 0) when allImages array changes (e.g., product loads or color changes)
+  const prevAllImagesLengthRef = useRef<number>(0)
+  useEffect(() => {
+    // Only reset if allImages actually changed (length or content)
+    if (allImages.length > 0 && (prevAllImagesLengthRef.current !== allImages.length || selectedImageIndex >= allImages.length)) {
+      setSelectedImageIndex(0)
+      prevAllImagesLengthRef.current = allImages.length
+    } else if (allImages.length === 0) {
+      prevAllImagesLengthRef.current = 0
+    }
+  }, [allImages.length, selectedImageIndex])
+
 
   const displayPrice = (() => {
     if (selectedVariant) {

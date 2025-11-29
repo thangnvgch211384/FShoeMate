@@ -58,11 +58,13 @@ interface Category {
   _id?: string
   name: string
   count?: number
+  parentId?: string | null
 }
 
 export default function Products() {
   const [searchParams, setSearchParams] = useSearchParams()
   const categoryFromUrl = searchParams.get("category")
+  const searchQuery = searchParams.get("q") || ""
   
   const [selectedCategory, setSelectedCategory] = useState<string | null>(categoryFromUrl || null)
   const [selectedBrands, setSelectedBrands] = useState<string[]>([])
@@ -114,16 +116,78 @@ export default function Products() {
     async function loadCategories() {
       try {
         const res = await fetchCategories()
-        const allCategories = res.categories || res || []
-        const filteredCategories = allCategories.filter(
-          (cat: Category) => 
+        
+        // Priority: Use grouped categories from backend if available
+        if (res.children && Array.isArray(res.children) && res.children.length > 0) {
+          const sortedCategories = res.children.sort((a: any, b: any) => {
+            const order = ["lifestyle", "running", "football", "skateboarding", "training-gym"]
+            const aIndex = order.indexOf(a.name?.toLowerCase() || "")
+            const bIndex = order.indexOf(b.name?.toLowerCase() || "")
+            if (aIndex === -1 && bIndex === -1) return 0
+            if (aIndex === -1) return 1
+            if (bIndex === -1) return -1
+            return aIndex - bIndex
+          })
+          setCategories(sortedCategories)
+          return
+        }
+        
+        // Fallback: Group categories manually if backend doesn't provide grouped
+        const allCategories = res.all || res.categories || res || []
+        
+        // Filter out parent categories (men, women, kids) for display
+        const childCategories = allCategories.filter(
+          (cat: any) => 
+            cat.parentId !== null && 
+            cat.parentId !== undefined &&
             cat.name?.toLowerCase() !== "men" && 
+            cat.name?.toLowerCase() !== "women" &&
+            cat.name?.toLowerCase() !== "kids" &&
             cat.id?.toLowerCase() !== "men" &&
-            cat._id?.toLowerCase() !== "men"
+            cat.id?.toLowerCase() !== "women" &&
+            cat.id?.toLowerCase() !== "kids"
         )
-        setCategories(filteredCategories)
+        
+        // Group child categories by name (Running, Football, Lifestyle) and sum counts
+        const groupedCategories = new Map<string, { name: string; count: number; id: string; ids: string[] }>()
+        
+        childCategories.forEach((cat: any) => {
+          const name = cat.name || ""
+          // Remove any prefix like "Men ", "Women ", "Kids " from name
+          const cleanName = name.replace(/^(Men|Women|Kids)\s+/i, "").trim() || name
+          
+          const existing = groupedCategories.get(cleanName)
+          if (existing) {
+            existing.count += cat.count || 0
+            if (cat.id && !existing.ids.includes(cat.id)) {
+              existing.ids.push(cat.id)
+            }
+          } else {
+            groupedCategories.set(cleanName, {
+              name: cleanName,
+              count: cat.count || 0,
+              id: cat.id || "",
+              ids: cat.id ? [cat.id] : []
+            })
+          }
+        })
+        
+        // Convert map to array and sort
+        const groupedArray = Array.from(groupedCategories.values())
+        const sortedCategories = groupedArray.sort((a, b) => {
+          const order = ["lifestyle", "running", "football", "skateboarding", "training-gym"]
+          const aIndex = order.indexOf(a.name?.toLowerCase() || "")
+          const bIndex = order.indexOf(b.name?.toLowerCase() || "")
+          if (aIndex === -1 && bIndex === -1) return 0
+          if (aIndex === -1) return 1
+          if (bIndex === -1) return -1
+          return aIndex - bIndex
+        })
+        
+        setCategories(sortedCategories)
       } catch (e) {
-        console.error(e)
+        console.error("Error loading categories:", e)
+        setCategories([])
       }
     }
     loadCategories()
@@ -182,11 +246,28 @@ export default function Products() {
     return true
   })
 
+  // Filter products by category name and search query
   const filteredProducts = productsWithoutCategoryFilter.filter((product) => {
+    // Filter by category if selected
     if (selectedCategory) {
-      const productCategoryId = product.categoryId || product.category?.id || ""
-      if (productCategoryId !== selectedCategory) return false
+      let productCategoryName = product.categoryName || product.category?.name || ""
+      // Remove prefix like "Men ", "Women ", "Kids " from category name for comparison
+      if (productCategoryName) {
+        productCategoryName = productCategoryName.replace(/^(Men|Women|Kids)\s+/i, "").trim() || productCategoryName
+      }
+      // Match by category name (case-insensitive)
+      if (productCategoryName?.toLowerCase() !== selectedCategory.toLowerCase()) return false
     }
+    
+    // Filter by search query if provided
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase().trim()
+      const nameMatch = product.name?.toLowerCase().includes(query)
+      const brandMatch = product.brand?.toLowerCase().includes(query)
+      const categoryMatch = product.categoryName?.toLowerCase().includes(query)
+      if (!nameMatch && !brandMatch && !categoryMatch) return false
+    }
+    
     return true
   })
 
@@ -226,42 +307,30 @@ export default function Products() {
     return p.colors.map((c: any) => typeof c === 'string' ? c : c.name)
   }))].sort()
   
+  // Count products by category name (grouped) - normalize names by removing Men/Women/Kids prefix
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = {}
     productsWithoutCategoryFilter.forEach((product) => {
-      const productCategoryId = product.categoryId || product.category?.id || ""
-      if (productCategoryId) {
-        counts[productCategoryId] = (counts[productCategoryId] || 0) + 1
+      let productCategoryName = product.categoryName || product.category?.name || ""
+      // Remove prefix like "Men ", "Women ", "Kids " from category name
+      if (productCategoryName) {
+        productCategoryName = productCategoryName.replace(/^(Men|Women|Kids)\s+/i, "").trim() || productCategoryName
+        counts[productCategoryName] = (counts[productCategoryName] || 0) + 1
       }
     })
     return counts
   }, [productsWithoutCategoryFilter])
 
-  // Debug: Log filtered products count
-  useEffect(() => {
-    console.log("Products.tsx - Total products loaded:", products.length)
-    console.log("Products.tsx - Filtered products count:", sortedProducts.length)
-    console.log("Products.tsx - Selected targetAudience:", selectedTargetAudience)
-    console.log("Products.tsx - Products by targetAudience:", {
-      male: sortedProducts.filter((p: any) => p.targetAudience?.includes("male")).length,
-      female: sortedProducts.filter((p: any) => p.targetAudience?.includes("female")).length,
-      kids: sortedProducts.filter((p: any) => p.targetAudience?.includes("kids")).length,
-      unisex: sortedProducts.filter((p: any) => p.targetAudience?.includes("unisex")).length,
-      none: sortedProducts.filter((p: any) => !p.targetAudience || p.targetAudience.length === 0).length
-    })
-  }, [sortedProducts, products.length, selectedTargetAudience])
 
-  useEffect(() => {
-    window.scrollTo({ top: 0, behavior: 'smooth' })
-  }, [selectedCategory, selectedBrands, selectedColors, selectedSize, selectedTargetAudience, priceRange])
 
-  const handleCategoryClick = (categoryId: string) => {
-    if (selectedCategory === categoryId) {
+
+  const handleCategoryClick = (categoryName: string) => {
+    if (selectedCategory === categoryName) {
       setSelectedCategory(null)
       setSearchParams({})
     } else {
-      setSelectedCategory(categoryId)
-      setSearchParams({ category: categoryId })
+      setSelectedCategory(categoryName)
+      setSearchParams({ category: categoryName })
     }
   }
 
@@ -479,23 +548,23 @@ export default function Products() {
                       <SelectTrigger className="w-full">
                         <SelectValue placeholder="Select category">
                           {selectedCategory 
-                            ? categories.find(c => (c.id || "") === selectedCategory)?.name || "Selected"
+                            ? categories.find(c => (c.name || "") === selectedCategory)?.name || selectedCategory
                             : "All categories"}
                         </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">All categories</SelectItem>
                         {categories.map((category) => {
-                          const categoryId = category.id || ""
-                          const count = categoryCounts[categoryId] ?? 0
-                          const isDisabled = count === 0 && selectedCategory !== categoryId
+                          const categoryName = category.name || ""
+                          const count = categoryCounts[categoryName] ?? category.count ?? 0
+                          const isDisabled = count === 0 && selectedCategory !== categoryName
                           return (
                             <SelectItem 
-                              key={categoryId || category._id} 
-                              value={categoryId}
+                              key={categoryName || category.id} 
+                              value={categoryName}
                               disabled={isDisabled}
                             >
-                              {category.name} {!isDisabled && count > 0 && `(${count})`}
+                              {categoryName} {!isDisabled && count > 0 && `(${count})`}
                             </SelectItem>
                           )
                         })}

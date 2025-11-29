@@ -84,7 +84,7 @@ export function Navbar() {
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault()
     if (searchQuery.trim()) {
-      navigate(`/search?q=${encodeURIComponent(searchQuery.trim())}`)
+      navigate(`/products?q=${encodeURIComponent(searchQuery.trim())}`)
       setSearchQuery("")
       setIsSearchFocused(false)
     }

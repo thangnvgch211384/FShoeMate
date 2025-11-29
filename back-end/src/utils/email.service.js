@@ -249,8 +249,8 @@ async function sendOrderConfirmationEmail(order, userEmail, userName) {
 async function sendOrderCancellationEmail(order, userEmail, userName) {
   // Kiểm tra env vars trước
   if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
-    console.warn("Email configuration missing. Order cancellation email will not be sent.");
-    return;
+    console.warn("Email configuration missing. Cancellation email will not be sent.");
+    return null;
   }
 
   const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080";
@@ -322,10 +322,12 @@ async function sendOrderCancellationEmail(order, userEmail, userName) {
 
   try {
     const transporter = getTransporter();
-    await transporter.sendMail(mailOptions);
+    const result = await transporter.sendMail(mailOptions);
+    console.info("Cancellation email sent to", userEmail, "for order", order._id?.toString());
+    return result;
   } catch (error) {
     console.error("Failed to send order cancellation email:", error);
-    throw error;
+    return null;
   }
 }
 
@@ -494,4 +496,3 @@ module.exports = {
   sendOrderCancellationEmail,
   sendOrderReceivedEmail 
 };
-

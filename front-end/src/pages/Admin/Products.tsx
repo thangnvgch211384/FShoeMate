@@ -91,7 +91,32 @@ export default function AdminProducts() {
       // Load categories
       try {
         const categoriesRes = await fetchCategories()
-        setCategories(categoriesRes.categories || [])
+        // Get all categories (including parent and child)
+        const allCategories = categoriesRes.all || categoriesRes.categories || []
+        
+        // Filter to only show child categories (categories with parentId)
+        const childCategories = allCategories.filter((cat: any) => cat.parentId)
+        
+        // Get parent categories for display name formatting
+        const parents = allCategories.filter((cat: any) => !cat.parentId)
+        const parentMap = new Map(parents.map((p: any) => [p.id, p.name]))
+        
+        // Format child categories with parent name prefix (e.g., "Men > Running")
+        const formattedCategories = childCategories.map((cat: any) => {
+          const parentName = parentMap.get(cat.parentId) || ""
+          const displayName = parentName ? `${parentName} > ${cat.name}` : cat.name
+          return {
+            id: cat.id,
+            name: displayName
+          }
+        })
+        
+        // Sort by parent name, then by child name
+        formattedCategories.sort((a, b) => {
+          return a.name.localeCompare(b.name)
+        })
+        
+        setCategories(formattedCategories)
       } catch (catError) {
         console.error("Failed to load categories:", catError)
       }

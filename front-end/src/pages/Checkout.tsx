@@ -21,30 +21,36 @@ import {
   X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { createOrder, createGuestOrder, getProfile, cancelOrder, cancelGuestOrder, validatePromotion } from "@/lib/api"
+import { createOrder, createGuestOrder, getProfile, cancelOrder, cancelGuestOrder, validatePromotion, getCart } from "@/lib/api"
 import { useToast } from "@/hooks/use-toast"
 
 type CheckoutStep = "shipping" | "payment" | "review"
 
 export default function Checkout() {
-  const { state, clearCart, refreshCart } = useCart()
+  const { state, clearCart, refreshCart, addToCart } = useCart()
   const { user, isAuthenticated, login: setAuthUser, refreshUser } = useAuth()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const { toast } = useToast()
   const [currentStep, setCurrentStep] = useState<CheckoutStep>("shipping")
   const [isProcessing, setIsProcessing] = useState(false)
+  // Start in "restoring" mode immediately if we return from PayOS with payment=cancelled
+  const [isRestoringCart, setIsRestoringCart] = useState(
+    searchParams.get("payment") === "cancelled" ||
+    (typeof window !== "undefined" && !!localStorage.getItem("pendingPayOSOrderId"))
+  )
 
   useEffect(() => {
     const paymentStatus = searchParams.get("payment")
     if (paymentStatus === "cancelled") {
       // Auto-cancel the order when PayOS payment is cancelled
       const handlePaymentCancellation = async () => {
+        const pendingOrderId = localStorage.getItem("pendingPayOSOrderId")
+        const pendingOrderEmail = localStorage.getItem("pendingPayOSOrderEmail")
+        const pendingCartSnapshot = localStorage.getItem("pendingPayOSCartItems")
+        setIsRestoringCart(true)
+
         try {
-          // Get orderId from localStorage (saved before redirecting to PayOS)
-          const pendingOrderId = localStorage.getItem("pendingPayOSOrderId")
-          const pendingOrderEmail = localStorage.getItem("pendingPayOSOrderEmail")
-          
           if (pendingOrderId) {
             // Cancel the order
             if (isAuthenticated) {
@@ -52,30 +58,90 @@ export default function Checkout() {
             } else if (pendingOrderEmail) {
               await cancelGuestOrder(pendingOrderId)
             }
-            
-            localStorage.removeItem("pendingPayOSOrderId")
-            localStorage.removeItem("pendingPayOSOrderEmail")
           }
-          
           toast({
             title: "Payment cancelled",
-            description: "Your payment was cancelled. You can try again.",
+            description: "Your payment was cancelled. Items have been restored to your cart.",
             variant: "destructive",
           })
         } catch (error: any) {
           console.error("Failed to cancel order:", error)
           toast({
             title: "Payment cancelled",
-            description: "Your payment was cancelled. You can try again.",
+            description: "Your payment was cancelled. You can place a new order below.",
             variant: "destructive",
           })
+        } finally {
+          localStorage.removeItem("pendingPayOSOrderId")
+          localStorage.removeItem("pendingPayOSOrderEmail")
+          // Try to rebuild cart for guests only. Logged-in users are restored by backend (webhook or cancel API).
+          try {
+            const serverCart = isAuthenticated ? await getCart() : null
+            const serverHasItems = !!serverCart?.cart?.items?.length
+
+            if (!isAuthenticated && !serverHasItems && pendingCartSnapshot) {
+              const snapshotItems = JSON.parse(pendingCartSnapshot) as Array<{
+                variantId?: string
+                quantity: number
+                productId?: string
+                name: string
+                brand?: string
+                price: number
+                image?: string
+                size?: string
+                color?: string
+              }>
+
+              for (const item of snapshotItems) {
+                if (item.variantId) {
+                  await addToCart({
+                    productId: item.productId || "",
+                    name: item.name,
+                    brand: item.brand,
+                    price: item.price,
+                    image: item.image,
+                    size: item.size,
+                    color: item.color,
+                    variantId: item.variantId,
+                    quantity: item.quantity
+                  }, { silent: true })
+                }
+              }
+            }
+          } catch (rebuildError) {
+            console.error("Failed to rebuild cart after PayOS cancel:", rebuildError)
+          } finally {
+            localStorage.removeItem("pendingPayOSCartItems")
+          }
+
+          // Always refresh cart so server-restored items show up for logged-in users
+          await refreshCart()
+
+          // Clear form and reset to first step
+          setShippingInfo({
+            fullName: "",
+            email: "",
+            phone: "",
+            address: "",
+            city: "",
+            country: "",
+            postalCode: "",
+            notes: ""
+          })
+          setPaymentMethod("cod")
+          setVoucherCode("")
+          setAppliedVoucher(null)
+          setCurrentStep("shipping")
+          setIsRestoringCart(false)
         }
       }
       
-      handlePaymentCancellation()
-      navigate("/checkout", { replace: true })
+      handlePaymentCancellation().finally(() => {
+        // Remove payment=cancelled from URL to prevent re-triggering
+        navigate("/checkout", { replace: true })
+      })
     }
-  }, [searchParams, navigate, toast, isAuthenticated])
+  }, [searchParams, navigate, toast, isAuthenticated, refreshCart, addToCart])
   
   const [shippingInfo, setShippingInfo] = useState({
     fullName: "",
@@ -83,8 +149,8 @@ export default function Checkout() {
     phone: "",
     address: "",
     city: "",
-    district: "",
-    ward: "",
+    country: "",
+    postalCode: "",
     notes: ""
   })
 
@@ -122,8 +188,8 @@ export default function Checkout() {
           phone: response.user.phone || "",
           address: address.street || "",
           city: address.city || "",
-          district: address.district || "",
-          ward: address.ward || "",
+          country: address.country || "",
+          postalCode: address.postalCode || "",
           notes: ""
         })
       }
@@ -153,7 +219,7 @@ export default function Checkout() {
 
     setIsProcessing(true)
     try {
-      const fullAddress = `${shippingInfo.address}, ${shippingInfo.ward}, ${shippingInfo.district}, ${shippingInfo.city}`.replace(/^,\s*/, '').replace(/,\s*$/, '')
+      const fullAddress = `${shippingInfo.address}, ${shippingInfo.city}${shippingInfo.country ? `, ${shippingInfo.country}` : ''}${shippingInfo.postalCode ? ` ${shippingInfo.postalCode}` : ''}`.replace(/^,\s*/, '').replace(/,\s*$/, '')
       
       const payload = {
         paymentMethod,
@@ -203,6 +269,8 @@ export default function Checkout() {
           // Save orderId and email to localStorage before redirecting
           // This allows us to cancel the order if user cancels PayOS payment
           localStorage.setItem("pendingPayOSOrderId", order._id || order.id)
+          // Save cart snapshot to rebuild if backend restore fails
+          localStorage.setItem("pendingPayOSCartItems", JSON.stringify(state.items))
           if (!isAuthenticated && shippingInfo.email) {
             localStorage.setItem("pendingPayOSOrderEmail", shippingInfo.email)
           }
@@ -314,7 +382,8 @@ export default function Checkout() {
 
   const isShippingValid = shippingInfo.fullName && shippingInfo.email && shippingInfo.phone && shippingInfo.address
 
-  if (state.items.length === 0) {
+  // When coming back from PayOS cancel, keep user on checkout while we restore the cart
+  if (!isRestoringCart && state.items.length === 0) {
     return (
       <div className="min-h-screen bg-background">
         <Navbar />
@@ -470,46 +539,37 @@ export default function Checkout() {
                   </div>
 
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">State/City *</label>
-                    <select
+                    <label className="text-sm font-medium">City *</label>
+                    <input
+                      type="text"
                       value={shippingInfo.city}
                       onChange={(e) => updateShippingInfo("city", e.target.value)}
+                      placeholder="Ho Chi Minh City"
                       className="w-full px-4 py-3 border border-border rounded-xl focus:outline-none focus:border-primary transition-colors bg-background"
                       required
-                    >
-                      <option value="">Select state/city</option>
-                      <option value="ho-chi-minh">Ho Chi Minh City</option>
-                      <option value="ha-noi">Hanoi</option>
-                      <option value="da-nang">Da Nang</option>
-                    </select>
+                    />
                   </div>
 
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">District/County</label>
-                    <select
-                      value={shippingInfo.district}
-                      onChange={(e) => updateShippingInfo("district", e.target.value)}
+                    <label className="text-sm font-medium">Country</label>
+                    <input
+                      type="text"
+                      value={shippingInfo.country}
+                      onChange={(e) => updateShippingInfo("country", e.target.value)}
+                      placeholder="Vietnam"
                       className="w-full px-4 py-3 border border-border rounded-xl focus:outline-none focus:border-primary transition-colors bg-background"
-                    >
-                      <option value="">Select district/county</option>
-                      <option value="quan-1">District 1</option>
-                      <option value="quan-2">District 2</option>
-                      <option value="quan-3">District 3</option>
-                    </select>
+                    />
                   </div>
 
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">Ward/Commune</label>
-                    <select
-                      value={shippingInfo.ward}
-                      onChange={(e) => updateShippingInfo("ward", e.target.value)}
+                    <label className="text-sm font-medium">Postal Code</label>
+                    <input
+                      type="text"
+                      value={shippingInfo.postalCode}
+                      onChange={(e) => updateShippingInfo("postalCode", e.target.value)}
+                      placeholder="700000"
                       className="w-full px-4 py-3 border border-border rounded-xl focus:outline-none focus:border-primary transition-colors bg-background"
-                    >
-                      <option value="">Select ward/commune</option>
-                      <option value="phuong-1">Ward 1</option>
-                      <option value="phuong-2">Ward 2</option>
-                      <option value="phuong-3">Ward 3</option>
-                    </select>
+                    />
                   </div>
                 </div>
 
@@ -688,7 +748,7 @@ export default function Checkout() {
                     <p className="text-sm text-muted-foreground">{shippingInfo.email}</p>
                     <p className="text-sm text-muted-foreground">{shippingInfo.phone}</p>
                     <p className="text-sm text-muted-foreground mt-2">
-                      {shippingInfo.address}, {shippingInfo.ward}, {shippingInfo.district}, {shippingInfo.city}
+                      {shippingInfo.address}, {shippingInfo.city}{shippingInfo.country ? `, ${shippingInfo.country}` : ''}{shippingInfo.postalCode ? ` ${shippingInfo.postalCode}` : ''}
                     </p>
                   </div>
                 </div>

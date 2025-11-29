@@ -10,6 +10,57 @@ const { sendOrderConfirmationEmail } = require("../../utils/email.service");
 const { sendOrderCancellationEmail } = require("../../utils/email.service");
 const { sendOrderReceivedEmail } = require("../../utils/email.service");
 
+async function sendCancellationEmails(order) {
+  // Build recipient list: guest email first, then user email (if different)
+  const recipients = [];
+  if (order.guestInfo?.email) {
+    recipients.push({
+      email: order.guestInfo.email,
+      name: order.guestInfo.name || ""
+    });
+  }
+  if (order.userId) {
+    const user = await User.findById(order.userId);
+    if (user?.email) {
+      // Avoid duplicate if same as guest
+      if (!recipients.find(r => r.email === user.email)) {
+        recipients.push({ email: user.email, name: user.name || "" });
+      }
+    }
+  }
+
+  const sentList = Array.isArray(order.metadata?.cancellationEmailSent)
+    ? order.metadata.cancellationEmailSent
+    : order.metadata?.cancellationEmailSent
+    ? [order.metadata.cancellationEmailSent]
+    : [];
+
+  if (recipients.length === 0) {
+    console.warn("Cancellation email skipped: no recipient email on order", order._id?.toString());
+    return;
+  }
+
+  const newlySent = [];
+
+  for (const r of recipients) {
+    if (!r.email || sentList.includes(r.email)) continue;
+    try {
+      await sendOrderCancellationEmail(order, r.email, r.name);
+      newlySent.push(r.email);
+    } catch (err) {
+      console.error("Failed to send cancellation email to", r.email, err.message || err);
+    }
+  }
+
+  if (newlySent.length > 0) {
+    order.metadata = {
+      ...(order.metadata || {}),
+      cancellationEmailSent: [...sentList, ...newlySent]
+    };
+    await order.save();
+  }
+}
+
 async function buildItemsFromCart(cart) {
   const populated = await Cart.findById(cart._id).populate({
     path: "items.variantId",
@@ -394,6 +445,7 @@ function updatePaymentStatus(orderId, paymentStatus) {
 async function handlePayOSWebhook(webhookData) {
   const { code, desc, data } = webhookData;
 
+  
   const orderCode = data?.orderCode;
   
   if (!orderCode) {
@@ -446,7 +498,49 @@ async function handlePayOSWebhook(webhookData) {
       }
     }
   } else {
+  // Payment failed or cancelled from PayOS
+  // Only process cancellation if order is still pending/processing
+  if (order.status === "pending" || order.status === "processing") {
     order.paymentStatus = "failed";
+    order.status = "cancelled";
+      
+      // Restore stock
+      await Promise.all(
+        order.items.map(async (item) => {
+          await Variant.findByIdAndUpdate(item.variantId, { $inc: { stock: item.quantity } });
+        })
+      );
+      
+      // Restore items to cart for authenticated users
+      if (order.userId) {
+        try {
+          const CartService = require("../cart/cart.service");
+          for (const item of order.items) {
+            try {
+              await CartService.addItem(order.userId, {
+                variantId: item.variantId,
+                quantity: item.quantity
+              });
+            } catch (error) {
+              // Continue with other items even if one fails
+            }
+          }
+        } catch (error) {
+          console.error("Failed to restore items to cart:", error);
+        }
+    }
+    
+    // Send cancellation email for both authenticated users and guests
+    try {
+      await sendCancellationEmails(order);
+    } catch (error) {
+      console.error("Failed to send cancellation email:", error.message || error);
+      // Don't throw - order should still be cancelled
+    }
+    } else {
+      // Order already processed, just update payment status
+      order.paymentStatus = "failed";
+    }
   }
 
   await order.save();
@@ -468,6 +562,16 @@ async function cancelOrder(orderId, userId) {
     const err = new Error("Order not found");
     err.status = 404;
     throw err;
+  }
+
+  // If already cancelled, treat as idempotent and still try to ensure cancellation email sent
+  if (order.status === "cancelled") {
+    try {
+      await sendCancellationEmails(order);
+    } catch (error) {
+      console.error("Failed to send cancellation email for already-cancelled order:", error.message || error);
+    }
+    return order;
   }
 
   if (order.status !== "pending" && order.status !== "processing") {
@@ -503,40 +607,41 @@ async function cancelOrder(orderId, userId) {
   // Reload order to ensure we have the latest data
   const updatedOrder = await Order.findById(orderId);
 
-  // Send cancellation email
+  // Send cancellation email FIRST (before restoring cart)
   try {
-    let email = "";
-    let name = "";
-    
-    // Get email and name from order or user
-    if (updatedOrder.userId) {
-      const user = await User.findById(updatedOrder.userId);
-      if (user) {
-        email = user.email || "";
-        name = user.name || "";
-      }
-    }
-    
-    // If no email from user, try guestInfo
-    if (!email && updatedOrder.guestInfo) {
-      email = updatedOrder.guestInfo.email || "";
-      name = updatedOrder.guestInfo.name || "";
-    }
-    
-    if (email && email.trim() !== "") {
-      await sendOrderCancellationEmail(updatedOrder, email, name);
-    }
+    await sendCancellationEmails(updatedOrder);
   } catch (error) {
-    console.error("Failed to send cancellation email:", error);
-    // Don't throw - order should still be cancelled
+    console.error("Failed to send cancellation email:", error.message || error);
+  }
+
+  // Restore items to cart for authenticated users (after sending email)
+  if (updatedOrder.userId) {
+    try {
+      const CartService = require("../cart/cart.service");
+      const userId = updatedOrder.userId.toString ? updatedOrder.userId.toString() : updatedOrder.userId;
+      
+      // Add each item back to cart
+      for (const item of updatedOrder.items) {
+        try {
+          await CartService.addItem(userId, {
+            variantId: item.variantId,
+            quantity: item.quantity
+          });
+        } catch (error) {
+          console.error(`Failed to restore item to cart:`, error.message);
+          // Continue with other items even if one fails
+        }
+      }
+    } catch (error) {
+      console.error("Failed to restore items to cart:", error);
+      // Don't throw - order should still be cancelled
+    }
   }
 
   return updatedOrder;
 }
 
 async function getAnalytics() {
-  // Total Revenue: Tính từ tất cả orders đã thanh toán (paid), không cần delivered
-  // Điều này phản ánh doanh thu thực tế từ các đơn hàng đã được thanh toán
   const paidOrders = await Order.find({ 
     status: { $ne: "cancelled" },
     paymentStatus: "paid"
@@ -547,18 +652,22 @@ async function getAnalytics() {
 
   const totalCustomers = await User.countDocuments({ role: "customer" });
 
-  // Avg Order Value: Tính từ tất cả orders (không chỉ paid orders)
   const allOrdersForAvg = await Order.find({ status: { $ne: "cancelled" } });
   const totalOrderValue = allOrdersForAvg.reduce((sum, order) => sum + (order.totals?.total || 0), 0);
   const avgOrderValue = totalOrders > 0 ? totalOrderValue / totalOrders : 0;
 
+  // Get recent orders (all statuses except cancelled, sorted by most recent)
   const recentOrders = await Order.find({ status: { $ne: "cancelled" } })
     .populate("userId", "name email")
     .sort({ createdAt: -1 })
     .limit(5)
     .lean();
 
-  const allOrders = await Order.find({ status: { $ne: "cancelled" } }).lean();
+  // Only count paid orders for most selling products
+  const allOrders = await Order.find({ 
+    status: { $ne: "cancelled" },
+    paymentStatus: "paid"
+  }).lean();
   
   const variantIds = [];
   allOrders.forEach(order => {
@@ -590,11 +699,20 @@ async function getAnalytics() {
   
   const existingProductMap = {};
   existingProducts.forEach(product => {
+    // Get first available image from colors
+    let productImage = null;
+    if (product.colors && Array.isArray(product.colors) && product.colors.length > 0) {
+      for (const color of product.colors) {
+        if (color.images && Array.isArray(color.images) && color.images.length > 0) {
+          productImage = color.images[0];
+          break;
+        }
+      }
+    }
+    
     existingProductMap[product._id.toString()] = {
       name: product.name,
-      image: (product?.colors && product.colors.length > 0 
-        && product.colors[0].images && product.colors[0].images.length > 0 
-        ? product.colors[0].images[0] : null)
+      image: productImage
     };
   });
 
@@ -636,8 +754,10 @@ async function getAnalytics() {
   const oneWeekAgo = new Date();
   oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
   
+  // Only count paid orders for weekly stats
   const weeklyOrders = await Order.find({
     status: { $ne: "cancelled" },
+    paymentStatus: "paid",
     createdAt: { $gte: oneWeekAgo },
     userId: { $ne: null }
   })
@@ -648,7 +768,7 @@ async function getAnalytics() {
   
   weeklyOrders.forEach(order => {
     if (order.userId) {
-      const userId = order.userId._id.toString();
+      const userId = order.userId._id ? order.userId._id.toString() : order.userId.toString();
       const customerName = order.userId.name || "Unknown";
       const customerEmail = order.userId.email || "";
       const orderTotal = order.totals?.total || 0;
